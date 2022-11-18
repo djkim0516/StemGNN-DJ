@@ -33,6 +33,7 @@ class StockBlockLayer(nn.Module):
         self.GLUs = nn.ModuleList()
         self.output_channel = 4 * self.multi
         for i in range(3):
+            print(f"self.GLUs i : {i}")
             if i == 0:
                 self.GLUs.append(GLU(self.time_step * 4, self.time_step * self.output_channel))
                 self.GLUs.append(GLU(self.time_step * 4, self.time_step * self.output_channel))
@@ -46,16 +47,29 @@ class StockBlockLayer(nn.Module):
     def spe_seq_cell(self, input):
         batch_size, k, input_channel, node_cnt, time_step = input.size()
         input = input.view(batch_size, -1, node_cnt, time_step)
-        ffted = torch.rfft(input, 1, onesided=False)
-        real = ffted[..., 0].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)
-        img = ffted[..., 1].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)
+        print("input shape : ",input.shape)
+        # ffted = torch.rfft(input, 1, onesided=False)
+        ffted = torch.fft.fft(input, None, -1) #, onesided=False)          #!
+        print(torch.view_as_real(ffted).shape)
+        ffted = torch.view_as_real(ffted)       #version difference
+        # print("ffted shape : ",ffted.shape)
+        # print(list(ffted[:,:,:,0][0].shape))
+        # print(list(ffted[...,0][0].shape))
+        # print(ffted[..., 0].shape)
+        # print(ffted[..., 1].shape)
+        
+        real = ffted[..., 0].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)     #실수부 real
+        img = ffted[..., 1].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)      #허수부 img
+        
+        print(real.shape)
+        
         for i in range(3):
             real = self.GLUs[i * 2](real)
             img = self.GLUs[2 * i + 1](img)
         real = real.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()
         img = img.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()
         time_step_as_inner = torch.cat([real.unsqueeze(-1), img.unsqueeze(-1)], dim=-1)
-        iffted = torch.irfft(time_step_as_inner, 1, onesided=False)
+        iffted = torch.fft.irfft(time_step_as_inner, 1) #, onesided=False)
         return iffted
 
     def forward(self, x, mul_L):
