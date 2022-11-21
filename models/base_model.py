@@ -45,13 +45,13 @@ class StockBlockLayer(nn.Module):
                 self.GLUs.append(GLU(self.time_step * self.output_channel, self.time_step * self.output_channel))
 
     def spe_seq_cell(self, input):
-        batch_size, k, input_channel, node_cnt, time_step = input.size()
-        input = input.view(batch_size, -1, node_cnt, time_step)
-        print("input shape : ",input.shape)
+        batch_size, k, input_channel, node_cnt, time_step = input.size()        # torch.Size([32, 4, 1, 140, 12])
+        input = input.view(batch_size, -1, node_cnt, time_step)                 # torch.Size([32, 4, 140, 12])
+        # print("input shape : ",input.shape)
         # ffted = torch.rfft(input, 1, onesided=False)
-        ffted = torch.fft.fft(input, None, -1) #, onesided=False)          #!
-        print(torch.view_as_real(ffted).shape)
-        ffted = torch.view_as_real(ffted)       #version difference
+        ffted = torch.fft.fft(input, None, -1) #, onesided=False)          # torch.Size([32, 4, 140, 12])
+        # print(torch.view_as_real(ffted).shape)
+        ffted = torch.view_as_real(ffted)       #version difference         torch.Size([32, 4, 140, 12, 2])
         # print("ffted shape : ",ffted.shape)
         # print(list(ffted[:,:,:,0][0].shape))
         # print(list(ffted[...,0][0].shape))
@@ -72,11 +72,12 @@ class StockBlockLayer(nn.Module):
         iffted = torch.fft.irfft(time_step_as_inner, 1) #, onesided=False)
         return iffted
 
-    def forward(self, x, mul_L):
-        mul_L = mul_L.unsqueeze(1)
-        x = x.unsqueeze(1)
-        gfted = torch.matmul(mul_L, x)
+    def forward(self, x, mul_L):        #mul_L : [4, 140, 140], x : [32, 1, 140, 12]
+        mul_L = mul_L.unsqueeze(1)      #mul_L : [4, 1, 140, 140]
+        x = x.unsqueeze(1)              #x : [32, 1, 1, 140, 12]
+        gfted = torch.matmul(mul_L, x)  #gfted : [32, 4, 1, 140, 12]
         gconv_input = self.spe_seq_cell(gfted).unsqueeze(2)
+        # print(f"gconv size : gconv_input")
         igfted = torch.matmul(gconv_input, self.weight)
         igfted = torch.sum(igfted, dim=1)
         forecast_source = torch.sigmoid(self.forecast(igfted).squeeze(1))
