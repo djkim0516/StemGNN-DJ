@@ -18,24 +18,24 @@ class StockBlockLayer(nn.Module):
         super(StockBlockLayer, self).__init__()
         self.time_step = time_step
         self.unit = unit
-        self.stack_cnt = stack_cnt
-        self.multi = multi_layer
+        self.stack_cnt = stack_cnt          
+        self.multi = multi_layer            #5
         self.weight = nn.Parameter(
-            torch.Tensor(1, 3 + 1, 1, self.time_step * self.multi,
-                         self.multi * self.time_step))  # [K+1, 1, in_c, out_c]
+            torch.Tensor(3 + 1, 1, self.time_step * self.multi,
+                         self.multi * self.time_step))  # [K+1, 1, in_c, out_c]     torch.Size([1, 4, 1, 60, 60])
         nn.init.xavier_normal_(self.weight)
         self.forecast = nn.Linear(self.time_step * self.multi, self.time_step * self.multi)
         self.forecast_result = nn.Linear(self.time_step * self.multi, self.time_step)
         if self.stack_cnt == 0:
-            self.backcast = nn.Linear(self.time_step * self.multi, self.time_step)
+            self.backcast = nn.Linear(self.time_step * self.multi, self.time_step)          #60, 12
         self.backcast_short_cut = nn.Linear(self.time_step, self.time_step)
         self.relu = nn.ReLU()
         self.GLUs = nn.ModuleList()
-        self.output_channel = 4 * self.multi
+        self.output_channel = 4 * self.multi            #4 * 5 = 20
         for i in range(3):
             print(f"self.GLUs i : {i}")
             if i == 0:
-                self.GLUs.append(GLU(self.time_step * 4, self.time_step * self.output_channel))
+                self.GLUs.append(GLU(self.time_step * 4, self.time_step * self.output_channel))     # 12 * 4 = 48, 12 * 20 = 240
                 self.GLUs.append(GLU(self.time_step * 4, self.time_step * self.output_channel))
             elif i == 1:
                 self.GLUs.append(GLU(self.time_step * self.output_channel, self.time_step * self.output_channel))
@@ -57,37 +57,40 @@ class StockBlockLayer(nn.Module):
         # print(list(ffted[...,0][0].shape))
         # print(ffted[..., 0].shape)
         # print(ffted[..., 1].shape)
-        
-        real = ffted[..., 0].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)     #실수부 real
+        temp = ffted[..., 0]
+        real = ffted[..., 0].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)     #실수부 real view_as_real 처음꺼
         img = ffted[..., 1].permute(0, 2, 1, 3).contiguous().reshape(batch_size, node_cnt, -1)      #허수부 img
         
-        print(real.shape)
+        # print(real.shape)
         
         for i in range(3):
-            real = self.GLUs[i * 2](real)
+            real = self.GLUs[i * 2](real)       #real : torch.Size([32, 140, 48]) -> torch.Size([32, 140, 240])
             img = self.GLUs[2 * i + 1](img)
-        real = real.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()
-        img = img.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()
-        time_step_as_inner = torch.cat([real.unsqueeze(-1), img.unsqueeze(-1)], dim=-1)
-        iffted = torch.fft.irfft(time_step_as_inner, 1) #, onesided=False)
-        return iffted
+        real = real.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()       #torch.Size([32, 140, 4, 60]) -> torch.Size([32, 4, 140, 60])
+        img = img.reshape(batch_size, node_cnt, 4, -1).permute(0, 2, 1, 3).contiguous()         #torch.Size([32, 4, 140, 60])
+        time_step_as_inner = torch.cat([real.unsqueeze(-1), img.unsqueeze(-1)], dim=-1)         #torch.Size([32, 4, 140, 60, 2])
+        iffted = torch.fft.irfft(time_step_as_inner, 1) #, onesided=False)                      #torch.Size([32, 4, 140, 60, 1])
+        return iffted.squeeze(-1)
 
     def forward(self, x, mul_L):        #mul_L : [4, 140, 140], x : [32, 1, 140, 12]
         mul_L = mul_L.unsqueeze(1)      #mul_L : [4, 1, 140, 140]
-        x = x.unsqueeze(1)              #x : [32, 1, 1, 140, 12]
+        x = x.unsqueeze(1)              #x : [32, 1, 1, 140, 12]        1 -> 4로 증가
         gfted = torch.matmul(mul_L, x)  #gfted : [32, 4, 1, 140, 12]
-        gconv_input = self.spe_seq_cell(gfted).unsqueeze(2)
+        gconv_input = self.spe_seq_cell(gfted).unsqueeze(2)         #gconv_input : torch.Size([32, 4, 1, 140, 60, 1])
         # print(f"gconv size : gconv_input")
-        igfted = torch.matmul(gconv_input, self.weight)
-        igfted = torch.sum(igfted, dim=1)
+        igfted = torch.matmul(gconv_input, self.weight)           #self.weight : torch.Size([1, 4, 1, 60, 60])
+        # igfted = torch.matmul(self.weight, gconv_input)             #self.weight : torch.Size([1, 4, 1, 60, 60])
+        # igfted = torch.sum(igfted, dim=1)                           #torch.Size([32, 4, 140, 60, 1])        32, 1 이여야하는데
+        igfted = torch.mean(igfted, dim=1)                           #torch.Size([32, 4, 140, 60, 1])        32, 1 이여야하는데
+        igfted = torch.squeeze(igfted, dim=-1)                           #* torch.Size([32, 4, 140, 60]) 추가
         forecast_source = torch.sigmoid(self.forecast(igfted).squeeze(1))
-        forecast = self.forecast_result(forecast_source)
+        forecast = self.forecast_result(forecast_source)            #torch.Size([32, 4, 140, 12])
         if self.stack_cnt == 0:
-            backcast_short = self.backcast_short_cut(x).squeeze(1)
-            backcast_source = torch.sigmoid(self.backcast(igfted) - backcast_short)
+            backcast_short = self.backcast_short_cut(x).squeeze(1)  #time_step -> time_step  #torch.Size([32, 1, 140, 12])
+            backcast_source = torch.sigmoid(self.backcast(igfted) - backcast_short)     
         else:
             backcast_source = None
-        return forecast, backcast_source
+        return forecast, backcast_source        #torch.Size([32, 4, 140, 12]), torch.Size([32, 4, 140, 12])
 
 
 class Model(nn.Module):
@@ -95,7 +98,7 @@ class Model(nn.Module):
                  device='cpu'):
         super(Model, self).__init__()
         self.unit = units
-        self.stack_cnt = stack_cnt
+        self.stack_cnt = stack_cnt          #stack_cnt = 2
         self.unit = units
         self.alpha = leaky_rate
         self.time_step = time_step
@@ -184,7 +187,8 @@ class Model(nn.Module):
         X = x.unsqueeze(1).permute(0, 1, 3, 2).contiguous()
         result = []
         for stack_i in range(self.stack_cnt):
-            forecast, X = self.stock_block[stack_i](X, mul_L)
+            # print(stack_i)
+            forecast, X = self.stock_block[stack_i](X, mul_L)       #torch.Size([32, 4, 140, 12]), torch.Size([32, 4, 140, 12])
             result.append(forecast)
         forecast = result[0] + result[1]
         forecast = self.fc(forecast)
